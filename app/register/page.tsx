@@ -5,6 +5,7 @@ import { supabase } from "../../lib/supabaseClient";
 import { FaInstagram, FaWhatsapp, FaTelegramPlane, FaGlobe } from "react-icons/fa";
 
 type NetworkMode = "instagram" | "whatsapp" | "telegram" | "all";
+type Gender = "male" | "female" | "gay" | "lesbian" | "bisexual" | "other";
 
 type Plan = {
   id: string;
@@ -18,6 +19,7 @@ type Plan = {
 
 export default function RegisterPage() {
   const [mode, setMode] = useState<NetworkMode>("instagram");
+  const [gender, setGender] = useState<Gender | "">("");
 
   const [form, setForm] = useState({
     name: "",
@@ -99,6 +101,7 @@ export default function RegisterPage() {
     if (!planId || plansLoading) return false;
     if (!form.email || !form.email.trim()) return false;
     if (message?.type === "info") return false; // block if email already exists
+    if (!gender) return false; // gender is required
     for (const key of requiredFields) {
       const v = (form as any)[key] as string;
       if (!v || !v.trim()) return false;
@@ -142,6 +145,68 @@ export default function RegisterPage() {
         return;
       }
 
+      // Normalize and validate DOB BEFORE creating auth user
+      const normalisedDob = form.dob.replace(/\//g, "-");
+      
+      // Validate DOB format: must be DD-MM-YYYY or YYYY-MM-DD
+      const dobRegex = /^(\d{2}-\d{2}-\d{4})|(\d{4}-\d{2}-\d{2})$/;
+      if (!dobRegex.test(normalisedDob)) {
+        setMessage({ 
+          type: "error", 
+          text: "Invalid date format. Please use DD-MM-YYYY or DD/MM/YYYY format (e.g., 20-04-2000 or 20/04/2000)" 
+        });
+        setSubmitting(false);
+        return;
+      }
+
+      // Additional date validation: check if it's a valid date
+      let dobDate: Date;
+      if (normalisedDob.match(/^\d{2}-\d{2}-\d{4}$/)) {
+        // DD-MM-YYYY format
+        const [day, month, year] = normalisedDob.split("-").map(Number);
+        dobDate = new Date(year, month - 1, day);
+        if (dobDate.getDate() !== day || dobDate.getMonth() !== month - 1 || dobDate.getFullYear() !== year) {
+          setMessage({ 
+            type: "error", 
+            text: "Invalid date. Please check your date of birth." 
+          });
+          setSubmitting(false);
+          return;
+        }
+      } else {
+        // YYYY-MM-DD format
+        dobDate = new Date(normalisedDob);
+        if (isNaN(dobDate.getTime())) {
+          setMessage({ 
+            type: "error", 
+            text: "Invalid date. Please check your date of birth." 
+          });
+          setSubmitting(false);
+          return;
+        }
+      }
+
+      // Check if date is not in the future
+      if (dobDate > new Date()) {
+        setMessage({ 
+          type: "error", 
+          text: "Date of birth cannot be in the future." 
+        });
+        setSubmitting(false);
+        return;
+      }
+
+      // Check if age is reasonable (at least 13 years old)
+      const age = Math.floor((new Date().getTime() - dobDate.getTime()) / (1000 * 60 * 60 * 24 * 365.25));
+      if (age < 13) {
+        setMessage({ 
+          type: "error", 
+          text: "You must be at least 13 years old to register." 
+        });
+        setSubmitting(false);
+        return;
+      }
+
       // Create Supabase Auth user
       const { error: signUpError } = await supabase.auth.signUp({
         email: cleanEmail,
@@ -167,10 +232,7 @@ export default function RegisterPage() {
         return;
       }
 
-      // Normalise DOB: convert DD/MM/YYYY → DD-MM-YYYY (the RPC accepts dashes only)
-      const normalisedDob = form.dob.replace(/\//g, "-");
-
-      // Create profile via RPC
+      // Create profile via RPC (normalisedDob already validated and normalized above)
       const rpcPayload: any = {
         _name: form.name.trim(),
         _dob: normalisedDob,
@@ -182,12 +244,19 @@ export default function RegisterPage() {
         _plan_id: selectedPlan.id,
         _plan_price: selectedPlan.price,
         _password: form.password,
+        _gender: gender || null,
       };
 
       const { data, error } = await supabase.rpc("create_profile_with_password", rpcPayload);
 
       if (error) {
-        setMessage({ type: "error", text: `Registration failed: ${error.message}` });
+        // Profile creation failed after auth user was created
+        // Show helpful error message
+        const errorMessage = error.message.toLowerCase().includes("date") || error.message.toLowerCase().includes("dob")
+          ? "Invalid date of birth format. Please use DD-MM-YYYY or DD/MM/YYYY format."
+          : `Registration failed: ${error.message}. If you continue to have issues, please contact support.`;
+        
+        setMessage({ type: "error", text: errorMessage });
         setSubmitting(false);
         return;
       }
@@ -404,6 +473,41 @@ export default function RegisterPage() {
                   maxLength={10}
                 />
               </Field>
+
+              {/* Gender selector */}
+              <div className="sm:col-span-2">
+              <Field label="Gender *">
+                <div className="grid grid-cols-3 gap-2">
+                  {(
+                    [
+                      { value: "male",      label: "Male",      emoji: "♂" },
+                      { value: "female",    label: "Female",    emoji: "♀" },
+                      { value: "gay",       label: "Gay",       emoji: "🏳️‍🌈" },
+                      { value: "lesbian",   label: "Lesbian",   emoji: "🏳️‍🌈" },
+                      { value: "bisexual",  label: "Bisexual",  emoji: "💜" },
+                      { value: "other",     label: "Other",     emoji: "✦" },
+                    ] as { value: Gender; label: string; emoji: string }[]
+                  ).map((opt) => (
+                    <button
+                      key={opt.value}
+                      type="button"
+                      onClick={() => setGender(opt.value)}
+                      className={`rounded-2xl border px-3 py-2.5 text-sm font-medium transition flex items-center justify-center gap-1.5 outline-none focus:ring-2 focus:ring-white/10 ${
+                        gender === opt.value
+                          ? "border-blue-500/40 bg-blue-500/10 text-blue-200"
+                          : "border-white/10 bg-black/35 hover:bg-black/55 text-white/70"
+                      }`}
+                    >
+                      <span className="text-base leading-none">{opt.emoji}</span>
+                      <span>{opt.label}</span>
+                    </button>
+                  ))}
+                </div>
+                {!gender && (
+                  <p className="mt-1.5 text-xs text-white/40">Select one to continue</p>
+                )}
+              </Field>
+              </div>
 
               {/* Email with live duplicate check */}
               <Field label="Email *">
